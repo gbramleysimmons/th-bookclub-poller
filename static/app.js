@@ -1,0 +1,323 @@
+"use strict";
+
+const app = document.getElementById("app");
+
+// --- API helpers ------------------------------------------------------------
+async function api(path, opts) {
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...opts,
+  });
+  let body = null;
+  try { body = await res.json(); } catch (e) { /* no body */ }
+  if (!res.ok) {
+    const msg = (body && body.detail) ? body.detail : `Error ${res.status}`;
+    throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+  }
+  return body;
+}
+
+function el(html) {
+  const t = document.createElement("template");
+  t.innerHTML = html.trim();
+  return t.content.firstChild;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+function savedName() { return localStorage.getItem("voterName") || ""; }
+function saveName(n) { localStorage.setItem("voterName", n); }
+
+// --- Router -----------------------------------------------------------------
+function route() {
+  const path = window.location.pathname;
+  const m = path.match(/^\/p\/([^/]+)$/);
+  if (m) {
+    renderPoll(decodeURIComponent(m[1]));
+  } else {
+    renderHome();
+  }
+}
+
+function navigate(path) {
+  window.history.pushState({}, "", path);
+  route();
+}
+window.addEventListener("popstate", route);
+
+// --- Home view --------------------------------------------------------------
+function renderHome() {
+  app.innerHTML = "";
+  const view = el(`
+    <div>
+      <div class="tabs">
+        <button id="tab-create" class="active">Create</button>
+        <button id="tab-join">Join</button>
+      </div>
+      <div id="pane"></div>
+    </div>
+  `);
+  app.appendChild(view);
+  const pane = view.querySelector("#pane");
+  const tabCreate = view.querySelector("#tab-create");
+  const tabJoin = view.querySelector("#tab-join");
+
+  function showCreate() {
+    tabCreate.classList.add("active"); tabJoin.classList.remove("active");
+    renderCreate(pane);
+  }
+  function showJoin() {
+    tabJoin.classList.add("active"); tabCreate.classList.remove("active");
+    renderJoin(pane);
+  }
+  tabCreate.onclick = showCreate;
+  tabJoin.onclick = showJoin;
+  showCreate();
+}
+
+function renderCreate(pane) {
+  pane.innerHTML = "";
+  const card = el(`
+    <div class="card">
+      <h1>Create a poll</h1>
+      <p class="muted">Ranked-choice voting using the Borda count.</p>
+      <label>Question / title</label>
+      <input id="title" type="text" placeholder="Which book should we read next?" />
+      <label>Options</label>
+      <div id="options"></div>
+      <button id="add-opt" class="btn-ghost btn-small">+ Add option</button>
+      <label>Custom shortcode</label>
+      <input id="shortcode" type="text" placeholder="bookclub-july" />
+      <div class="spacer"></div>
+      <button id="submit" class="btn-primary">Create poll</button>
+      <div id="msg"></div>
+    </div>
+  `);
+  pane.appendChild(card);
+
+  const optionsBox = card.querySelector("#options");
+  function addOption(value) {
+    const rowCount = optionsBox.children.length;
+    const row = el(`
+      <div class="option-row">
+        <input type="text" placeholder="Option ${rowCount + 1}" />
+        <button class="btn-danger" title="Remove">✕</button>
+      </div>
+    `);
+    if (value) row.querySelector("input").value = value;
+    row.querySelector("button").onclick = () => {
+      if (optionsBox.children.length > 2) row.remove();
+    };
+    optionsBox.appendChild(row);
+  }
+  addOption(); addOption();
+  card.querySelector("#add-opt").onclick = () => addOption();
+
+  const msg = card.querySelector("#msg");
+  card.querySelector("#submit").onclick = async () => {
+    msg.innerHTML = "";
+    const title = card.querySelector("#title").value.trim();
+    const shortcode = card.querySelector("#shortcode").value.trim();
+    const options = [...optionsBox.querySelectorAll("input")]
+      .map((i) => i.value.trim()).filter(Boolean);
+    if (!title) return showMsg(msg, "error", "Please enter a title.");
+    if (options.length < 2) return showMsg(msg, "error", "Add at least 2 options.");
+    if (!shortcode) return showMsg(msg, "error", "Please choose a shortcode.");
+    try {
+      await api("/api/polls", {
+        method: "POST",
+        body: JSON.stringify({ title, options, shortcode }),
+      });
+      navigate(`/p/${encodeURIComponent(shortcode.toLowerCase())}`);
+    } catch (e) {
+      showMsg(msg, "error", e.message);
+    }
+  };
+}
+
+function renderJoin(pane) {
+  pane.innerHTML = "";
+  const card = el(`
+    <div class="card">
+      <h1>Join a poll</h1>
+      <p class="muted">Enter the shortcode someone shared with you.</p>
+      <label>Shortcode</label>
+      <input id="code" type="text" placeholder="bookclub-july" />
+      <div class="spacer"></div>
+      <button id="go" class="btn-primary">Go to poll</button>
+      <div id="msg"></div>
+    </div>
+  `);
+  pane.appendChild(card);
+  const msg = card.querySelector("#msg");
+  card.querySelector("#go").onclick = () => {
+    const code = card.querySelector("#code").value.trim().toLowerCase();
+    if (!code) return showMsg(msg, "error", "Enter a shortcode.");
+    navigate(`/p/${encodeURIComponent(code)}`);
+  };
+}
+
+// --- Poll view --------------------------------------------------------------
+async function renderPoll(shortcode) {
+  app.innerHTML = `<div class="card"><p class="muted">Loading…</p></div>`;
+  let poll;
+  try {
+    poll = await api(`/api/polls/${encodeURIComponent(shortcode)}`);
+  } catch (e) {
+    app.innerHTML = `<div class="card"><h1>Poll not found</h1>
+      <p class="muted">No poll exists for “${esc(shortcode)}”.</p>
+      <div class="spacer"></div>
+      <button class="btn-primary" onclick="navigate('/')">Back home</button></div>`;
+    return;
+  }
+
+  app.innerHTML = "";
+  const shareUrl = `${window.location.origin}/p/${encodeURIComponent(poll.shortcode)}`;
+  const view = el(`
+    <div>
+      <div class="card">
+        <h1>${esc(poll.title)}</h1>
+        <p class="muted">${poll.voteCount} vote(s) so far • code <strong>${esc(poll.shortcode)}</strong></p>
+        <div class="share">
+          <input id="shareurl" type="text" readonly value="${esc(shareUrl)}" />
+          <button id="copy" class="btn-ghost btn-small">Copy</button>
+        </div>
+      </div>
+      <div class="tabs">
+        <button id="tab-vote" class="active">Vote</button>
+        <button id="tab-results">Results</button>
+      </div>
+      <div id="pane"></div>
+    </div>
+  `);
+  app.appendChild(view);
+
+  view.querySelector("#copy").onclick = () => {
+    const inp = view.querySelector("#shareurl");
+    inp.select();
+    navigator.clipboard && navigator.clipboard.writeText(inp.value);
+    view.querySelector("#copy").textContent = "Copied!";
+    setTimeout(() => (view.querySelector("#copy").textContent = "Copy"), 1500);
+  };
+
+  const pane = view.querySelector("#pane");
+  const tabVote = view.querySelector("#tab-vote");
+  const tabResults = view.querySelector("#tab-results");
+  tabVote.onclick = () => {
+    tabVote.classList.add("active"); tabResults.classList.remove("active");
+    renderVote(pane, poll);
+  };
+  tabResults.onclick = () => {
+    tabResults.classList.add("active"); tabVote.classList.remove("active");
+    renderResults(pane, poll.shortcode);
+  };
+  renderVote(pane, poll);
+}
+
+function renderVote(pane, poll) {
+  pane.innerHTML = "";
+  // ranking: array of option indices, most-preferred first.
+  let ranking = poll.options.map((_, i) => i);
+
+  const card = el(`
+    <div class="card">
+      <h2>Rank the options</h2>
+      <p class="muted">Order from most (top) to least preferred.</p>
+      <label>Your name</label>
+      <input id="voter" type="text" placeholder="e.g. Alex" value="${esc(savedName())}" />
+      <div class="spacer"></div>
+      <div id="ranklist"></div>
+      <button id="submit" class="btn-primary">Submit vote</button>
+      <div id="msg"></div>
+    </div>
+  `);
+  pane.appendChild(card);
+  const list = card.querySelector("#ranklist");
+
+  function draw() {
+    list.innerHTML = "";
+    ranking.forEach((optIdx, pos) => {
+      const item = el(`
+        <div class="rank-item">
+          <div class="rank-num">${pos + 1}</div>
+          <div class="rank-label">${esc(poll.options[optIdx])}</div>
+          <div class="rank-btns">
+            <button data-dir="up" ${pos === 0 ? "disabled" : ""}>▲</button>
+            <button data-dir="down" ${pos === ranking.length - 1 ? "disabled" : ""}>▼</button>
+          </div>
+        </div>
+      `);
+      item.querySelectorAll("button").forEach((b) => {
+        b.onclick = () => {
+          const dir = b.dataset.dir;
+          const swap = dir === "up" ? pos - 1 : pos + 1;
+          [ranking[pos], ranking[swap]] = [ranking[swap], ranking[pos]];
+          draw();
+        };
+      });
+      list.appendChild(item);
+    });
+  }
+  draw();
+
+  const msg = card.querySelector("#msg");
+  card.querySelector("#submit").onclick = async () => {
+    msg.innerHTML = "";
+    const voter = card.querySelector("#voter").value.trim();
+    if (!voter) return showMsg(msg, "error", "Please enter your name.");
+    saveName(voter);
+    try {
+      await api(`/api/polls/${encodeURIComponent(poll.shortcode)}/vote`, {
+        method: "POST",
+        body: JSON.stringify({ voter, ranking }),
+      });
+      showMsg(msg, "success", "Vote recorded! Check the Results tab.");
+    } catch (e) {
+      showMsg(msg, "error", e.message);
+    }
+  };
+}
+
+async function renderResults(pane, shortcode) {
+  pane.innerHTML = `<div class="card"><p class="muted">Loading results…</p></div>`;
+  let data;
+  try {
+    data = await api(`/api/polls/${encodeURIComponent(shortcode)}/results`);
+  } catch (e) {
+    pane.innerHTML = `<div class="card"><p class="notice error">${esc(e.message)}</p></div>`;
+    return;
+  }
+  const max = Math.max(1, ...data.results.map((r) => r.points));
+  const rows = data.results.map((r, i) => `
+    <div class="result-row">
+      <div class="result-head">
+        <span class="${i === 0 && data.voteCount > 0 ? "winner" : ""}">
+          ${i === 0 && data.voteCount > 0 ? "🏆 " : ""}${esc(r.option)}
+        </span>
+        <span class="muted">${r.points} pts</span>
+      </div>
+      <div class="bar"><span style="width:${(r.points / max) * 100}%"></span></div>
+    </div>
+  `).join("");
+
+  pane.innerHTML = "";
+  pane.appendChild(el(`
+    <div class="card">
+      <h2>Results</h2>
+      <p class="muted">${data.voteCount} vote(s) • Borda count</p>
+      ${data.voteCount === 0 ? '<p class="notice">No votes yet.</p>' : rows}
+    </div>
+  `));
+}
+
+// --- utils ------------------------------------------------------------------
+function showMsg(container, kind, text) {
+  container.innerHTML = `<div class="notice ${kind}">${esc(text)}</div>`;
+}
+window.navigate = navigate;
+
+route();
