@@ -226,7 +226,7 @@ function renderVote(pane, poll) {
   const card = el(`
     <div class="card">
       <h2>Rank the options</h2>
-      <p class="muted">Order from most (top) to least preferred.</p>
+      <p class="muted">Drag ⠿ to reorder — most (top) to least preferred. You can also use ▲▼.</p>
       <label>Your name</label>
       <input id="voter" type="text" placeholder="e.g. Alex" value="${esc(savedName())}" />
       <div class="spacer"></div>
@@ -242,7 +242,8 @@ function renderVote(pane, poll) {
     list.innerHTML = "";
     ranking.forEach((optIdx, pos) => {
       const item = el(`
-        <div class="rank-item">
+        <div class="rank-item" data-pos="${pos}">
+          <div class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder">⠿</div>
           <div class="rank-num">${pos + 1}</div>
           <div class="rank-label">${esc(poll.options[optIdx])}</div>
           <div class="rank-btns">
@@ -259,8 +260,47 @@ function renderVote(pane, poll) {
           draw();
         };
       });
+      item.querySelector(".drag-handle")
+        .addEventListener("pointerdown", (e) => startDrag(e, pos));
       list.appendChild(item);
     });
+  }
+
+  // Pointer-based drag reordering (works with mouse and touch).
+  let drag = null;
+  function startDrag(e, pos) {
+    e.preventDefault();
+    drag = { pos };
+    list.querySelectorAll(".rank-item")[pos].classList.add("dragging");
+    window.addEventListener("pointermove", onDrag);
+    window.addEventListener("pointerup", endDrag);
+  }
+
+  function onDrag(e) {
+    if (!drag) return;
+    const items = [...list.querySelectorAll(".rank-item")];
+    let target = drag.pos;
+    for (let i = 0; i < items.length; i++) {
+      const r = items[i].getBoundingClientRect();
+      const mid = r.top + r.height / 2;
+      if (e.clientY >= mid && i > target) target = i;
+      if (e.clientY <= mid && i < target) { target = i; break; }
+    }
+    if (target !== drag.pos) {
+      const moved = ranking.splice(drag.pos, 1)[0];
+      ranking.splice(target, 0, moved);
+      drag.pos = target;
+      draw();
+      list.querySelectorAll(".rank-item")[target].classList.add("dragging");
+    }
+  }
+
+  function endDrag() {
+    if (!drag) return;
+    window.removeEventListener("pointermove", onDrag);
+    window.removeEventListener("pointerup", endDrag);
+    drag = null;
+    draw();
   }
   draw();
 
