@@ -345,11 +345,29 @@ async function renderResults(pane, shortcode) {
   `).join("");
 
   pane.innerHTML = "";
+  const ballots = data.ballots || [];
+  const ballotRows = ballots.map((b) => `
+    <div class="ballot">
+      <div class="ballot-voter">${esc(b.voter)}</div>
+      <ol class="ballot-list">
+        ${b.ranking.map((opt) => `<li>${esc(opt)}</li>`).join("")}
+      </ol>
+    </div>
+  `).join("");
+
   pane.appendChild(el(`
-    <div class="card">
-      <h2>Results</h2>
-      <p class="muted">${data.voteCount} vote(s) • Borda count</p>
-      ${data.voteCount === 0 ? '<p class="notice">No votes yet.</p>' : rows}
+    <div>
+      <div class="card">
+        <h2>Results</h2>
+        <p class="muted">${data.voteCount} vote(s) • Borda count</p>
+        ${data.voteCount === 0 ? '<p class="notice">No votes yet.</p>' : rows}
+      </div>
+      ${ballots.length ? `
+      <div class="card">
+        <h2>How everyone voted</h2>
+        <p class="muted">Each ballot, top (most preferred) to bottom.</p>
+        ${ballotRows}
+      </div>` : ""}
     </div>
   `));
 }

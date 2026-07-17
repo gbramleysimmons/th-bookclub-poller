@@ -88,12 +88,22 @@ def results(shortcode: str):
     poll = get_store().get_poll(shortcode.lower())
     if not poll:
         raise HTTPException(status_code=404, detail="Poll not found.")
-    ballots = [v["ranking"] for v in poll.get("votes", [])]
+    options = poll["options"]
+    votes = poll.get("votes", [])
+    ballots = [v["ranking"] for v in votes]
+    voterBallots = [
+        {
+            "voter": v["voter"],
+            "ranking": [options[i] for i in v["ranking"] if 0 <= i < len(options)],
+        }
+        for v in votes
+    ]
     return {
         "shortcode": poll["shortcode"],
         "title": poll["title"],
         "voteCount": len(ballots),
-        "results": borda_scores(poll["options"], ballots),
+        "results": borda_scores(options, ballots),
+        "ballots": voterBallots,
     }
 
 
