@@ -238,11 +238,40 @@ function renderVote(pane, poll) {
   pane.appendChild(card);
   const list = card.querySelector("#ranklist");
 
+  function itemByOpt(optIdx) {
+    return list.querySelector(`.rank-item[data-opt="${optIdx}"]`);
+  }
+
+  // FLIP animation: record positions, run a mutation + redraw, then animate
+  // each item sliding from its old position to its new one. Gives reordering
+  // a sense of weight and continuity instead of snapping instantly.
+  function animateReorder(mutate, { skipOpt = null } = {}) {
+    const before = new Map();
+    list.querySelectorAll(".rank-item").forEach((it) => {
+      before.set(it.dataset.opt, it.getBoundingClientRect().top);
+    });
+    mutate();
+    draw();
+    list.querySelectorAll(".rank-item").forEach((it) => {
+      if (it.dataset.opt === String(skipOpt)) return;
+      const prevTop = before.get(it.dataset.opt);
+      if (prevTop === undefined) return;
+      const dy = prevTop - it.getBoundingClientRect().top;
+      if (!dy) return;
+      it.style.transition = "none";
+      it.style.transform = `translateY(${dy}px)`;
+      requestAnimationFrame(() => {
+        it.style.transition = "transform 240ms cubic-bezier(.2,.9,.3,1)";
+        it.style.transform = "";
+      });
+    });
+  }
+
   function draw() {
     list.innerHTML = "";
     ranking.forEach((optIdx, pos) => {
       const item = el(`
-        <div class="rank-item" data-pos="${pos}">
+        <div class="rank-item" data-pos="${pos}" data-opt="${optIdx}">
           <div class="drag-handle" title="Drag to reorder" aria-label="Drag to reorder">⠿</div>
           <div class="rank-num">${pos + 1}</div>
           <div class="rank-label">${esc(poll.options[optIdx])}</div>
@@ -256,24 +285,46 @@ function renderVote(pane, poll) {
         b.onclick = () => {
           const dir = b.dataset.dir;
           const swap = dir === "up" ? pos - 1 : pos + 1;
-          [ranking[pos], ranking[swap]] = [ranking[swap], ranking[pos]];
-          draw();
+          animateReorder(() => {
+            [ranking[pos], ranking[swap]] = [ranking[swap], ranking[pos]];
+          });
         };
       });
       item.querySelector(".drag-handle")
         .addEventListener("pointerdown", (e) => startDrag(e, pos));
       list.appendChild(item);
     });
+    // Keep the actively dragged item lifted after a redraw.
+    if (drag) {
+      const it = itemByOpt(drag.opt);
+      if (it) it.classList.add("dragging");
+    }
   }
 
   // Pointer-based drag reordering (works with mouse and touch).
   let drag = null;
   function startDrag(e, pos) {
     e.preventDefault();
-    drag = { pos };
-    list.querySelectorAll(".rank-item")[pos].classList.add("dragging");
+    const it = list.querySelectorAll(".rank-item")[pos];
+    const rect = it.getBoundingClientRect();
+    drag = { pos, opt: ranking[pos], grabOffset: e.clientY - rect.top, height: rect.height };
+    it.classList.add("dragging");
+    // Follow the pointer immediately for a responsive, weighty feel.
+    liftFollow(e.clientY);
     window.addEventListener("pointermove", onDrag);
     window.addEventListener("pointerup", endDrag);
+  }
+
+  // Move the dragged item so it tracks the pointer, with a slight lift.
+  function liftFollow(clientY) {
+    const it = itemByOpt(drag.opt);
+    if (!it) return;
+    const rect = it.getBoundingClientRect();
+    const naturalTop = rect.top;
+    const desiredTop = clientY - drag.grabOffset;
+    const dy = desiredTop - naturalTop;
+    it.style.transition = "none";
+    it.style.transform = `translateY(${dy}px) scale(1.03)`;
   }
 
   function onDrag(e) {
@@ -287,20 +338,35 @@ function renderVote(pane, poll) {
       if (e.clientY <= mid && i < target) { target = i; break; }
     }
     if (target !== drag.pos) {
-      const moved = ranking.splice(drag.pos, 1)[0];
-      ranking.splice(target, 0, moved);
+      const from = drag.pos;
+      // Slide the displaced items (FLIP), but keep the dragged item glued
+      // to the pointer instead of animating it into its new slot.
+      animateReorder(() => {
+        const moved = ranking.splice(from, 1)[0];
+        ranking.splice(target, 0, moved);
+      }, { skipOpt: drag.opt });
       drag.pos = target;
-      draw();
-      list.querySelectorAll(".rank-item")[target].classList.add("dragging");
     }
+    liftFollow(e.clientY);
   }
 
   function endDrag() {
     if (!drag) return;
     window.removeEventListener("pointermove", onDrag);
     window.removeEventListener("pointerup", endDrag);
+    const it = itemByOpt(drag.opt);
     drag = null;
-    draw();
+    if (it) {
+      // Settle the item back into place with a springy transition.
+      it.style.transition = "transform 260ms cubic-bezier(.2,.9,.3,1)";
+      it.style.transform = "";
+      const cleanup = () => {
+        it.classList.remove("dragging");
+        it.style.transition = "";
+        it.removeEventListener("transitionend", cleanup);
+      };
+      it.addEventListener("transitionend", cleanup);
+    }
   }
   draw();
 
